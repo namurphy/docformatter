@@ -143,11 +143,7 @@ def _format_code(source,
             is_in_range(line_range, start[0], end[0]) and
             has_correct_length(length_range, start[0], end[0])
         ):
-            if only_comments_so_far:
-                indentation = ''
-            else:
-                indentation = previous_token_string
-
+            indentation = '' if only_comments_so_far else previous_token_string
             token_string = format_docstring(
                 indentation,
                 token_string,
@@ -213,11 +209,7 @@ def format_docstring(indentation, docstring,
     if description:
         # Compensate for triple quotes by temporarily prepending 3 spaces.
         # This temporary prepending is undone below.
-        if pre_summary_newline:
-            initial_indent = indentation
-        else:
-            initial_indent = 3 * ' ' + indentation
-
+        initial_indent = indentation if pre_summary_newline else 3 * ' ' + indentation
         return '''\
 """{pre_summary}{summary}
 
@@ -237,24 +229,23 @@ def format_docstring(indentation, docstring,
             post_description=('\n' if post_description_blank else ''),
             indentation=indentation)
     else:
-        if make_summary_multi_line:
-            beginning = '"""\n' + indentation
-            ending = '\n' + indentation + '"""'
-            summary_wrapped = wrap_summary(
-                normalize_summary(contents),
-                wrap_length=summary_wrap_length,
-                initial_indent=indentation,
-                subsequent_indent=indentation).strip()
-            return '{beginning}{summary}{ending}'.format(
-                beginning=beginning,
-                summary=summary_wrapped,
-                ending=ending
-            )
-        else:
+        if not make_summary_multi_line:
             return wrap_summary('"""' + normalize_summary(contents) + '"""',
                                 wrap_length=summary_wrap_length,
                                 initial_indent=indentation,
                                 subsequent_indent=indentation).strip()
+        beginning = '"""\n' + indentation
+        ending = '\n' + indentation + '"""'
+        summary_wrapped = wrap_summary(
+            normalize_summary(contents),
+            wrap_length=summary_wrap_length,
+            initial_indent=indentation,
+            subsequent_indent=indentation).strip()
+        return '{beginning}{summary}{ending}'.format(
+            beginning=beginning,
+            summary=summary_wrapped,
+            ending=ending
+        )
 
 
 def reindent(text, indentation):
@@ -273,7 +264,7 @@ def is_probably_beginning_of_sentence(line):
     """Return True if this line begins a new sentence."""
     # Check heuristically for a parameter list.
     for token in ['@', '-', r'\*']:
-        if re.search(r'\s' + token + r'\s', line):
+        if re.search(f'\\s{token}\\s', line):
             return True
 
     stripped_line = line.strip()
@@ -291,16 +282,11 @@ def split_summary_and_description(contents):
     split_lines = contents.rstrip().splitlines()
 
     for index in range(1, len(split_lines)):
-        found = False
-
-        if not split_lines[index].strip():
-            # Empty line separation would indicate the rest is the description.
-            found = True
-        elif is_probably_beginning_of_sentence(split_lines[index]):
-            # Symbol on second line probably is a description with a list.
-            found = True
-
-        if found:
+        if found := bool(
+            not split_lines[index].strip()
+            or split_lines[index].strip()
+            and is_probably_beginning_of_sentence(split_lines[index])
+        ):
             return ('\n'.join(split_lines[:index]).strip(),
                     '\n'.join(split_lines[index:]).rstrip())
 
@@ -328,13 +314,12 @@ def split_first_sentence(text):
 
     while rest:
         split = re.split(r'(\s)', rest, maxsplit=1)
+        word = split[0]
         if len(split) == 3:
-            word = split[0]
             delimiter = split[1]
             rest = split[2]
         else:
             assert len(split) == 1
-            word = split[0]
             delimiter = ''
             rest = ''
 
@@ -369,8 +354,7 @@ def is_some_sort_of_list(text):
                               [1]) > HEURISTIC_MIN_LIST_ASPECT_RATIO:
         return True
 
-    for line in split_lines:
-        if (
+    return any((
             re.match(r'\s*$', line) or
             # "1. item"
             re.match(r'\s*[0-9]\.', line) or
@@ -384,10 +368,7 @@ def is_some_sort_of_list(text):
             re.match(r'\s*\S+:\s*$', line) or
             # "parameter -- description"
             re.match(r'\s*\S+\s+--\s+', line)
-        ):
-            return True
-
-    return False
+        ) for line in split_lines)
 
 
 def is_some_sort_of_code(text):
@@ -544,12 +525,7 @@ def strip_leading_blank_lines(text):
     """Return text with leading blank lines removed."""
     split = text.splitlines()
 
-    found = 0
-    for index, line in enumerate(split):
-        if line.strip():
-            found = index
-            break
-
+    found = next((index for index, line in enumerate(split) if line.strip()), 0)
     return '\n'.join(split[found:])
 
 
@@ -597,9 +573,11 @@ def format_file(filename, args, standard_out):
             diff = difflib.unified_diff(
                 source.splitlines(),
                 formatted_source.splitlines(),
-                'before/' + filename,
-                'after/' + filename,
-                lineterm='')
+                f'before/{filename}',
+                f'after/{filename}',
+                lineterm='',
+            )
+
             standard_out.write('\n'.join(list(diff) + ['']))
 
     return FormatResult.ok
@@ -666,8 +644,10 @@ def _main(argv, standard_out, standard_error, standard_in):
                         default=None, type=int, nargs=2,
                         help='apply docformatter to docstrings of given '
                              'length')
-    parser.add_argument('--version', action='version',
-                        version='%(prog)s ' + __version__)
+    parser.add_argument(
+        '--version', action='version', version=f'%(prog)s {__version__}'
+    )
+
     parser.add_argument('files', nargs='+',
                         help="files to format or '-' for standard in")
 
@@ -746,10 +726,7 @@ def find_py_files(sources, recursive, exclude=None):
         """Return True if file 'name' is excluded."""
         if not exclude:
             return False
-        for e in exclude:
-            if re.search(re.escape(str(e)), name, re.IGNORECASE):
-                return True
-        return False
+        return any(re.search(re.escape(str(e)), name, re.IGNORECASE) for e in exclude)
 
     for name in sorted(sources):
         if recursive and os.path.isdir(name):
